@@ -1,14 +1,19 @@
 import sys
+import json
+from collections import Counter
 from pathlib import Path
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QUrl, QTimer
 from PySide6.QtGui import QFont
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QTextEdit, QListWidget, QListWidgetItem, QStackedWidget,
     QMessageBox, QDialog, QDialogButtonBox, QProgressBar, QFrame, QSplitter,
-    QTabWidget, QFormLayout
+    QTabWidget, QFormLayout, QSizePolicy, QSlider
 )
 from modules.recorder import AudioRecorder
+from html import escape
+
 from modules.pipeline import process_recording
 
 from target_phonemizer import target_phonemizer_main
@@ -312,180 +317,311 @@ class MainWindow(QMainWindow):
         layout.addSpacing(40)
         layout.addWidget(footer)
         return page 
-    
+     
     def make_record_page(self):
         page = QWidget()
         outer = QVBoxLayout(page)
-        outer.setContentsMargins(24, 18, 24, 22)
-        outer.setSpacing(18)
+        outer.setContentsMargins(22, 12, 22, 16)
+        outer.setSpacing(0)
 
-        # ================= HEADER =================
+        self.record_stage_stack = QStackedWidget()
+        outer.addWidget(self.record_stage_stack)
+
+        # =====================================================
+        # SCREEN 1: RECORDING DETAILS
+        # =====================================================
+        self.details_stage = QWidget()
+        details_layout = QVBoxLayout(self.details_stage)
+        details_layout.setContentsMargins(8, 4, 8, 8)
+        details_layout.setSpacing(12)
+
+        # Header
         top = QHBoxLayout()
+        back_home = QPushButton("← Back to Home")
+        back_home.clicked.connect(self.go_home)
 
-        back = QPushButton("←  Back to Home")
-        back.setMinimumHeight(42)
-        back.clicked.connect(self.go_home)
+        details_title = QLabel("01  RECORDING DETAILS")
+        details_title.setObjectName("heading")
+        details_title.setAlignment(Qt.AlignCenter)
 
-        heading_box = QVBoxLayout()
-        self.record_title = QLabel("Recording Studio")
-        self.record_title.setObjectName("heading")
-        self.record_title.setAlignment(Qt.AlignCenter)
+        top.addWidget(back_home)
+        top.addStretch()
+        top.addWidget(details_title)
+        top.addStretch()
+        details_layout.addLayout(top)
 
-        subtitle = QLabel("Capture speech and analyze pronunciation")
-        subtitle.setObjectName("muted")
-        subtitle.setAlignment(Qt.AlignCenter)
+        intro = QLabel(
+            "Prepare the assessment details before starting the recording."
+        )
+        intro.setObjectName("muted")
+        intro.setAlignment(Qt.AlignCenter)
+        intro.setWordWrap(True)
+        details_layout.addWidget(intro)
 
-        heading_box.addWidget(self.record_title)
-        heading_box.addWidget(subtitle)
+        # Center the form and button in the available space
+        details_layout.addStretch(1)
 
-        top.addWidget(back)
-        top.addStretch(1)
-        top.addLayout(heading_box)
-        top.addStretch(1)
-
-        # Balance the header so the title stays centered.
-        spacer = QWidget()
-        spacer.setFixedWidth(back.sizeHint().width())
-        top.addWidget(spacer)
-
-        outer.addLayout(top)
-
-        # ================= RECORD DETAILS =================
         form = QFrame()
         form.setObjectName("panel")
-        form_layout = QFormLayout(form)
-        form_layout.setContentsMargins(22, 18, 22, 18)
-        form_layout.setHorizontalSpacing(20)
-        form_layout.setVerticalSpacing(14)
-        form_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        form.setMaximumWidth(1050)
 
-        section_label = QLabel("01  RECORDING DETAILS")
-        section_label.setObjectName("sectionLabel")
-        form_layout.addRow(section_label, QLabel(""))
+        form_layout = QVBoxLayout(form)
+        form_layout.setContentsMargins(26, 22, 26, 22)
+        form_layout.setSpacing(8)
+
+        # Recording name label and input
+        name_label = QLabel("Recording name")
+        name_label.setStyleSheet("font-weight: 700;")
+        name_label.setWordWrap(True)
+        form_layout.addWidget(name_label)
 
         self.name_input = QLineEdit("session_1")
-        self.name_input.setMinimumHeight(42)
+        self.name_input.setMinimumHeight(44)
         self.name_input.setPlaceholderText("e.g. session_1")
+        form_layout.addWidget(self.name_input)
+
+        # Expected sentence label and input
+        sentence_label = QLabel("Expected sentence")
+        sentence_label.setStyleSheet("font-weight: 700;")
+        sentence_label.setWordWrap(True)
+        form_layout.addWidget(sentence_label)
 
         self.words_input = QLineEdit()
-        self.words_input.setMinimumHeight(42)
+        self.words_input.setMinimumHeight(44)
         self.words_input.setPlaceholderText(
-            "Enter the sentence the speaker will say..."
+            "Enter the sentence the client should say"
         )
-
-        name_label = QLabel("Record name")
-        words_label = QLabel("Expected sentence")
-
-        form_layout.addRow(name_label, self.name_input)
-        form_layout.addRow(words_label, self.words_input)
+        form_layout.addWidget(self.words_input)
 
         self.form_note = QLabel(
-            "Target phonemes will be generated automatically before recording."
+            "Both fields are required. Target phonemes will be generated "
+            "before recording begins."
         )
         self.form_note.setObjectName("muted")
         self.form_note.setWordWrap(True)
-        form_layout.addRow("", self.form_note)
+        self.form_note.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred
+        )
+        form_layout.addSpacing(4)
+        form_layout.addWidget(self.form_note)
 
-        outer.addWidget(form)
+        # Keep the card from stretching too wide on large windows
+        form_row = QHBoxLayout()
+        form_row.addStretch(1)
+        form_row.addWidget(form, 8)
+        form_row.addStretch(1)
+        details_layout.addLayout(form_row)
 
-        # ================= AUDIO MONITOR =================
+        continue_btn = QPushButton("Continue to Recording  →")
+        continue_btn.setObjectName("primary")
+        continue_btn.setMinimumHeight(52)
+        continue_btn.setMaximumWidth(1050)
+        continue_btn.clicked.connect(self.continue_to_recording)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        button_row.addWidget(continue_btn, 8)
+        button_row.addStretch(1)
+        details_layout.addLayout(button_row)
+
+        details_layout.addStretch(1)
+        self.record_stage_stack.addWidget(self.details_stage)
+
+        # =====================================================
+        # SCREEN 2: RECORDING WORKSTATION
+        # =====================================================
+        self.recording_stage = QWidget()
+        recording_layout = QVBoxLayout(self.recording_stage)
+        recording_layout.setContentsMargins(8, 2, 8, 8)
+        recording_layout.setSpacing(8)
+
+        # Header
+        recording_top = QHBoxLayout()
+
+        self.edit_details_btn = QPushButton("← Edit Details")
+        self.edit_details_btn.clicked.connect(
+            lambda: self.record_stage_stack.setCurrentWidget(
+                self.details_stage
+            )
+        )
+
+        recording_title = QLabel("Recording")
+        recording_title.setObjectName("heading")
+        recording_title.setAlignment(Qt.AlignCenter)
+
+        recording_top.addWidget(self.edit_details_btn)
+        recording_top.addStretch()
+        recording_top.addWidget(recording_title)
+        recording_top.addStretch()
+        recording_layout.addLayout(recording_top)
+
+        # Expected sentence
+        sentence_panel = QFrame()
+        sentence_panel.setObjectName("panel")
+        sentence_layout = QVBoxLayout(sentence_panel)
+        sentence_layout.setContentsMargins(18, 10, 18, 10)
+        sentence_layout.setSpacing(5)
+
+        sentence_hint = QLabel("SAY THE FOLLOWING SENTENCE")
+        sentence_hint.setAlignment(Qt.AlignCenter)
+        sentence_hint.setStyleSheet(
+            "color: #38a4ff; font-size: 12px; font-weight: 700;"
+        )
+
+        self.expected_sentence_label = QLabel(
+            "Your expected sentence will appear here."
+        )
+        self.expected_sentence_label.setWordWrap(True)
+        self.expected_sentence_label.setAlignment(Qt.AlignCenter)
+        self.expected_sentence_label.setStyleSheet(
+            "font-size: 22px; font-weight: 700; color: #e8f0fb;"
+        )
+
+        sentence_layout.addWidget(sentence_hint)
+        sentence_layout.addWidget(self.expected_sentence_label)
+        recording_layout.addWidget(sentence_panel)
+
+        # Audio monitor heading
+        audio_heading = QLabel("02  AUDIO MONITOR")
+        audio_heading.setStyleSheet(
+            "font-size: 15px; font-weight: 700; color: #9bb0c8;"
+        )
+        recording_layout.addWidget(audio_heading)
+
+        # Audio monitor gets the extra vertical space
         meter = QFrame()
-        meter.setObjectName("meterPanel")
+        meter.setObjectName("panel")
+        meter.setMinimumHeight(125)
+        meter.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding
+        )
+
         meter_layout = QVBoxLayout(meter)
-        meter_layout.setContentsMargins(20, 18, 20, 18)
-        meter_layout.setSpacing(10)
+        meter_layout.setContentsMargins(14, 8, 14, 8)
+        meter_layout.setSpacing(4)
 
-        meter_header = QHBoxLayout()
-        meter_title = QLabel("02  AUDIO MONITOR")
-        meter_title.setObjectName("sectionLabel")
-
-        self.live_status = QLabel("●  READY TO RECORD")
-        self.live_status.setObjectName("readyStatus")
-        self.live_status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
-        meter_header.addWidget(meter_title)
-        meter_header.addStretch()
-        meter_header.addWidget(self.live_status)
-        meter_layout.addLayout(meter_header)
-
-        self.wave_label = QLabel("▁  ▂  ▃  ▄  ▅  ▆  ▇  ▆  ▅  ▄  ▃  ▂  ▁")
-        self.wave_label.setObjectName("waveDisplay")
+        self.wave_label = QLabel("▁ ▂ ▃ ▅ ▇ ▅ ▃ ▂ ▁")
         self.wave_label.setAlignment(Qt.AlignCenter)
-        self.wave_label.setMinimumHeight(100)
-        meter_layout.addWidget(self.wave_label)
+        self.wave_label.setMinimumHeight(48)
+        self.wave_label.setStyleSheet(
+            "font-size: 32px; color: #27b6d8; font-weight: 700;"
+        )
 
-        self.clock_label = QLabel("●  00:00")
-        self.clock_label.setObjectName("recordClock")
+        self.clock_label = QLabel("● 00:00")
         self.clock_label.setAlignment(Qt.AlignCenter)
+        self.clock_label.setMinimumHeight(38)
+        self.clock_label.setStyleSheet(
+            "font-size: 23px; font-weight: 700;"
+        )
+
+        meter_layout.addStretch(1)
+        meter_layout.addWidget(self.wave_label)
         meter_layout.addWidget(self.clock_label)
+        meter_layout.addStretch(1)
 
-        outer.addWidget(meter)
+        recording_layout.addWidget(meter, 1)
 
-        # ================= RECORDING CONTROLS =================
-        controls_panel = QFrame()
-        controls_panel.setObjectName("panel")
-        controls_layout = QVBoxLayout(controls_panel)
-        controls_layout.setContentsMargins(20, 18, 20, 18)
-        controls_layout.setSpacing(14)
+        # Recording controls
+        controls_heading = QLabel("03  RECORDING CONTROLS")
+        controls_heading.setStyleSheet(
+            "font-size: 15px; font-weight: 700; color: #9bb0c8;"
+        )
+        recording_layout.addWidget(controls_heading)
 
-        controls_title = QLabel("03  RECORDING CONTROLS")
-        controls_title.setObjectName("sectionLabel")
-        controls_layout.addWidget(controls_title)
+        controls = QHBoxLayout()
+        controls.setSpacing(12)
 
-        buttons = QHBoxLayout()
-        buttons.setSpacing(12)
-
-        self.start_btn = QPushButton("●   Start Recording")
+        self.start_btn = QPushButton("●  Start Recording")
         self.start_btn.setObjectName("primary")
-        self.start_btn.setMinimumHeight(50)
-        self.start_btn.setMinimumWidth(200)
+        self.start_btn.setMinimumSize(170, 46)
 
-        self.pause_btn = QPushButton("Ⅱ   Pause")
-        self.pause_btn.setMinimumHeight(50)
-        self.pause_btn.setMinimumWidth(150)
+        self.pause_btn = QPushButton("Ⅱ  Pause")
         self.pause_btn.setEnabled(False)
+        self.pause_btn.setMinimumSize(115, 46)
 
-        self.stop_btn = QPushButton("■   Stop Recording")
+        self.stop_btn = QPushButton("■  Stop")
         self.stop_btn.setObjectName("danger")
-        self.stop_btn.setMinimumHeight(50)
-        self.stop_btn.setMinimumWidth(180)
         self.stop_btn.setEnabled(False)
+        self.stop_btn.setMinimumSize(100, 46)
 
         self.start_btn.clicked.connect(self.start_recording)
         self.pause_btn.clicked.connect(self.toggle_pause)
         self.stop_btn.clicked.connect(self.confirm_stop)
 
-        buttons.addStretch()
-        buttons.addWidget(self.start_btn)
-        buttons.addWidget(self.pause_btn)
-        buttons.addWidget(self.stop_btn)
-        buttons.addStretch()
+        controls.addStretch()
+        controls.addWidget(self.start_btn)
+        controls.addWidget(self.pause_btn)
+        controls.addWidget(self.stop_btn)
+        controls.addStretch()
+        recording_layout.addLayout(controls)
 
-        controls_layout.addLayout(buttons)
+        # Live status and recording feedback
+        self.live_status = QLabel("●  READY TO RECORD")
+        self.live_status.setAlignment(Qt.AlignCenter)
+        self.live_status.setStyleSheet(
+            "color: #9bb0c8; font-weight: 700;"
+        )
+        recording_layout.addWidget(self.live_status)
 
         self.record_status = QLabel(
-            "Ready. Enter a record name and expected sentence, then start."
+            "Enter the recording details before you begin."
         )
-        self.record_status.setObjectName("statusMessage")
+        self.record_status.setObjectName("muted")
         self.record_status.setAlignment(Qt.AlignCenter)
         self.record_status.setWordWrap(True)
-        controls_layout.addWidget(self.record_status)
+        recording_layout.addWidget(self.record_status)
 
-        outer.addWidget(controls_panel)
-        outer.addStretch(1)
+        self.record_stage_stack.addWidget(self.recording_stage)
+        self.record_stage_stack.setCurrentWidget(self.details_stage)
 
         return page
 
+    def continue_to_recording(self):
+        name = self.name_input.text().strip()
+        words = self.words_input.text().strip()
+
+        if not name or not words:
+            QMessageBox.warning(
+                self,
+                "Missing information",
+                "Please enter both the recording name and expected sentence "
+                "before continuing."
+            )
+            return
+
+        safe_name = "".join(
+            c for c in name if c.isalnum() or c in "-_ "
+        ).strip().replace(" ", "_")
+
+        if not safe_name:
+            QMessageBox.warning(
+                self,
+                "Invalid recording name",
+                "Please use a name containing letters, numbers, hyphens, "
+                "or underscores."
+            )
+            return
+
+        self.name_input.setText(safe_name)
+        self.expected_words = words
+
+        self.expected_sentence_label.setText(words)
+        self.record_status.setText(
+            f"Ready to record: {safe_name}"
+        )
+
+        self.record_stage_stack.setCurrentWidget(self.recording_stage)
 
     def make_files_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(18, 14, 18, 14)
-        layout.setSpacing(12)
+        layout.setContentsMargins(16, 12, 16, 16)
+        layout.setSpacing(10)
 
-        # Compact page header
+        # ---------------- HEADER ----------------
         top = QHBoxLayout()
-        top.setSpacing(12)
 
         back = QPushButton("← Home")
         back.clicked.connect(self.go_home)
@@ -496,7 +632,7 @@ class MainWindow(QMainWindow):
         title = QLabel("Saved Recordings")
         title.setObjectName("heading")
 
-        subtitle = QLabel("Review speech analysis and session results")
+        subtitle = QLabel("Audio playback and speech analysis results")
         subtitle.setObjectName("muted")
 
         title_box.addWidget(title)
@@ -505,30 +641,30 @@ class MainWindow(QMainWindow):
         refresh_btn = QPushButton("↻ Refresh")
         refresh_btn.clicked.connect(self.refresh_files)
 
-        top.addWidget(back, 0, Qt.AlignVCenter)
-        top.addSpacing(8)
-        top.addLayout(title_box)
-        top.addStretch()
-        top.addWidget(refresh_btn, 0, Qt.AlignVCenter)
-
+        top.addWidget(back)
+        top.addLayout(title_box, 1)
+        top.addWidget(refresh_btn)
         layout.addLayout(top)
 
-        # Main content: left sessions, right results
+        # ---------------- MAIN SPLITTER ----------------
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(5)
+        splitter.setHandleWidth(6)
 
-        # LEFT PANEL
+        # LEFT: SESSION LIST
         left = QFrame()
         left.setObjectName("panel")
-        left.setMinimumWidth(210)
+        left.setMinimumWidth(190)
+        left.setMaximumWidth(380)
 
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(12, 12, 12, 12)
-        left_layout.setSpacing(9)
+        left_layout.setSpacing(8)
 
         session_heading = QLabel("RECORDINGS")
-        session_heading.setObjectName("sectionTitle")
+        session_heading.setStyleSheet(
+            "font-size: 15px; font-weight: 700; color: #9bb0c8;"
+        )
 
         self.session_count = QLabel("Sessions: 0")
         self.session_count.setObjectName("muted")
@@ -543,20 +679,20 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.session_count)
         left_layout.addWidget(self.file_list, 1)
 
-        # RIGHT PANEL
+        # RIGHT: DETAILS AND RESULTS
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(8)
 
         detail_header = QHBoxLayout()
-        detail_header.setSpacing(10)
 
         title_column = QVBoxLayout()
-        title_column.setSpacing(3)
+        title_column.setSpacing(2)
 
         self.detail_title = QLabel("Select a recording")
         self.detail_title.setObjectName("heading")
+        self.detail_title.setWordWrap(True)
 
         self.detail_status = QLabel(
             "Choose a session from the left panel."
@@ -566,45 +702,105 @@ class MainWindow(QMainWindow):
 
         title_column.addWidget(self.detail_title)
         title_column.addWidget(self.detail_status)
-
         detail_header.addLayout(title_column, 1)
 
         self.process_bar = QProgressBar()
         self.process_bar.setRange(0, 0)
-        self.process_bar.setMaximumWidth(180)
+        self.process_bar.setMaximumWidth(150)
         self.process_bar.setVisible(False)
+        detail_header.addWidget(self.process_bar)
 
-        detail_header.addWidget(self.process_bar, 0, Qt.AlignVCenter)
         right_layout.addLayout(detail_header)
 
+        # ---------------- AUDIO PLAYER ----------------
+        audio_panel = QFrame()
+        audio_panel.setObjectName("panel")
+
+        audio_layout = QVBoxLayout(audio_panel)
+        audio_layout.setContentsMargins(12, 10, 12, 10)
+        audio_layout.setSpacing(6)
+
+        audio_heading = QLabel("AUDIO PLAYBACK")
+        audio_heading.setStyleSheet(
+            "font-weight: 700; color: #9bb0c8;"
+        )
+        audio_layout.addWidget(audio_heading)
+
+        player_controls = QHBoxLayout()
+        player_controls.setSpacing(8)
+
+        self.audio_play_btn = QPushButton("▶ Play")
+        self.audio_play_btn.setObjectName("primary")
+        self.audio_play_btn.setMinimumWidth(90)
+        self.audio_play_btn.clicked.connect(self.toggle_audio)
+
+        self.audio_time_label = QLabel("00:00 / 00:00")
+        self.audio_time_label.setMinimumWidth(100)
+        self.audio_time_label.setAlignment(Qt.AlignCenter)
+
+        self.audio_slider = QSlider(Qt.Horizontal)
+        self.audio_slider.setRange(0, 0)
+        self.audio_slider.setSingleStep(100)
+        self.audio_slider.sliderMoved.connect(self.seek_audio)
+
+        player_controls.addWidget(self.audio_play_btn)
+        player_controls.addWidget(self.audio_slider, 1)
+        player_controls.addWidget(self.audio_time_label)
+
+        audio_layout.addLayout(player_controls)
+        right_layout.addWidget(audio_panel)
+
+        # Create the player once, not every time a session is selected.
+        self.audio_output = QAudioOutput(self)
+        self.audio_player = QMediaPlayer(self)
+        self.audio_player.setAudioOutput(self.audio_output)
+
+        self.audio_player.positionChanged.connect(
+            self.update_audio_position
+        )
+        self.audio_player.durationChanged.connect(
+            self.update_audio_duration
+        )
+        self.audio_player.playbackStateChanged.connect(
+            self.update_audio_button
+        )
+        self.audio_player.errorOccurred.connect(
+            self.handle_audio_error
+        )
+
+        # ---------------- RESULT TABS ----------------
         self.result_tabs = QTabWidget()
 
         self.result_text = QTextEdit()
         self.result_text.setReadOnly(True)
-        self.result_text.setAcceptRichText(False)
-        self.result_tabs.addTab(
-            self.result_text, "Overview / Results"
-        )
+        self.result_text.setAcceptRichText(True)
+        self.result_tabs.addTab(self.result_text, "Overview")
+
+        self.analysis_text = QTextEdit()
+        self.analysis_text.setReadOnly(True)
+        self.analysis_text.setAcceptRichText(True)
+        self.result_tabs.addTab(self.analysis_text, "Analysis Details")
 
         self.json_text = QTextEdit()
         self.json_text.setReadOnly(True)
+        self.json_text.setAcceptRichText(False)
+        self.json_text.setLineWrapMode(QTextEdit.NoWrap)
         self.result_tabs.addTab(self.json_text, "Raw JSON")
 
         right_layout.addWidget(self.result_tabs, 1)
 
-        # Bottom actions
+        # ---------------- BOTTOM ACTIONS ----------------
         actions = QHBoxLayout()
-        actions.setSpacing(8)
 
         self.process_selected_btn = QPushButton(
-            "▶  Process Recording"
+            "▶ Process Recording"
         )
         self.process_selected_btn.setObjectName("primary")
         self.process_selected_btn.clicked.connect(
             self.process_selected
         )
 
-        self.delete_btn = QPushButton("🗑  Delete")
+        self.delete_btn = QPushButton("🗑 Delete")
         self.delete_btn.setObjectName("danger")
         self.delete_btn.clicked.connect(self.delete_selected)
 
@@ -618,11 +814,64 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([270, 850])
+        splitter.setSizes([250, 900])
 
         layout.addWidget(splitter, 1)
 
+        # Initial player state
+        self.audio_play_btn.setEnabled(False)
+        self.audio_slider.setEnabled(False)
+
         return page
+
+    def format_audio_time(self, milliseconds):
+        seconds = max(0, int(milliseconds // 1000))
+        return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+    def toggle_audio(self):
+        if self.audio_player.playbackState() == QMediaPlayer.PlayingState:
+            self.audio_player.pause()
+        else:
+            self.audio_player.play()
+
+
+    def seek_audio(self, position):
+        self.audio_player.setPosition(position)
+
+
+    def update_audio_position(self, position):
+        if not self.audio_slider.isSliderDown():
+            self.audio_slider.setValue(position)
+
+        duration = self.audio_player.duration()
+        self.audio_time_label.setText(
+            f"{self.format_audio_time(position)} / "
+            f"{self.format_audio_time(duration)}"
+        )
+
+
+    def update_audio_duration(self, duration):
+        self.audio_slider.setRange(0, max(0, duration))
+        self.audio_time_label.setText(
+            f"{self.format_audio_time(self.audio_player.position())} / "
+            f"{self.format_audio_time(duration)}"
+        )
+
+
+    def update_audio_button(self, state):
+        if state == QMediaPlayer.PlayingState:
+            self.audio_play_btn.setText("Ⅱ Pause")
+        else:
+            self.audio_play_btn.setText("▶ Play")
+
+
+    def handle_audio_error(self, error, error_string):
+        if error != QMediaPlayer.NoError:
+            self.audio_time_label.setText("Audio unavailable")
+            self.detail_status.setText(
+                f"Could not play audio: {error_string}"
+            )
 
     def go_home(self):
         if self.recording_active:
@@ -664,6 +913,11 @@ class MainWindow(QMainWindow):
         self.elapsed = 0
         self.paused = False
         self.recording_active = True
+        self.edit_details_btn.setEnabled(False)
+        self.live_status.setText("●  RECORDING IN PROGRESS")
+        self.live_status.setStyleSheet(
+            "color: #35d07f; font-weight: 700;"
+        )
         self.timer.start()
         self.wave_timer.start()
         self.start_btn.setEnabled(False)
@@ -741,6 +995,7 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(True)
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
+        self.edit_details_btn.setEnabled(True)
         self.pause_btn.setText("Ⅱ Pause")
         self.name_input.setEnabled(True)
         self.words_input.setEnabled(True)
@@ -782,114 +1037,427 @@ class MainWindow(QMainWindow):
         return results
 
     def refresh_files(self):
-        """List session folders under target_phonemes."""
         if not hasattr(self, "file_list"):
             return
+
+        target_root = ROOT / "target_phonemes"
+        target_root.mkdir(parents=True, exist_ok=True)
 
         current = self.file_list.currentItem()
         current_name = current.data(Qt.UserRole) if current else None
 
+        sessions = sorted(
+            [
+                folder for folder in target_root.iterdir()
+                if folder.is_dir()
+                and (folder / f"{folder.name}.json").exists()
+            ],
+            key=lambda folder: folder.stat().st_mtime,
+            reverse=True
+        )
+
         self.file_list.blockSignals(True)
         self.file_list.clear()
 
-        if RECORDINGS.exists():
-            sessions = [
-                folder for folder in RECORDINGS.iterdir()
-                if folder.is_dir()
-                and (folder / f"{folder.name}.json").is_file()
-            ]
+        for folder in sessions:
+            name = folder.name
 
-            sessions.sort(
-                key=lambda p: (
-                    0,
-                    int(p.name.split("_")[-1])
-                ) if p.name.startswith("session_")
-                and p.name.split("_")[-1].isdigit()
-                else (1, p.name.lower()),
-                reverse=False
-            )
-
-            for folder in sessions:
-                name = folder.name
-                results = self.get_session_data(name)
-
-                processed = any(
-                    label in results
-                    for label in (
-                        "Transcription",
-                        "Actual Phonemes",
-                        "PCC / PVC",
-                        "SODA",
-                    )
+            processed = all(
+                (ROOT / result_folder / f"{name}.json").exists()
+                for result_folder in (
+                    "transcription",
+                    "phoneme_word",
+                    "phonetic_inventory",
+                    "pcc_pvc",
+                    "tttr_syllable_shape",
+                    "soda",
                 )
-
-                status = "● Processed" if processed else "● Not processed"
-                item = QListWidgetItem(f"{name}\n{status}")
-                item.setData(Qt.UserRole, name)
-                item.setData(Qt.UserRole + 1, processed)
-                self.file_list.addItem(item)
-
-                if name == current_name:
-                    self.file_list.setCurrentItem(item)
-                    
-            self.session_count.setText(
-                f"Sessions: {self.file_list.count()}"
             )
+
+            item = QListWidgetItem(
+                f"{name}\n{'● Processed' if processed else '○ Incomplete'}"
+            )
+            item.setData(Qt.UserRole, name)
+            item.setData(Qt.UserRole + 1, processed)
+            self.file_list.addItem(item)
+
+            if name == current_name:
+                self.file_list.setCurrentItem(item)
 
         self.file_list.blockSignals(False)
+
+        if self.file_list.currentItem():
+            self.show_selected_record(self.file_list.currentItem())
+            
+        self.session_count.setText(f"Sessions: {len(sessions)}")
 
         if self.file_list.count() and self.file_list.currentRow() < 0:
             self.file_list.setCurrentRow(0)
         elif not self.file_list.count():
+            self.audio_player.stop()
+            self.audio_player.setSource(QUrl())
             self.detail_title.setText("No recordings yet")
             self.detail_status.setText(
-                "Record a session to see its results here."
+                "Record a session to view its audio and analysis results."
             )
             self.result_text.clear()
+            self.analysis_text.clear()
             self.json_text.clear()
-            self.process_selected_btn.setEnabled(False)
-            self.delete_btn.setEnabled(False)
+            self.audio_play_btn.setEnabled(False)
+            self.audio_slider.setEnabled(False)
+            self.audio_time_label.setText("00:00 / 00:00")
 
     def show_selected_record(self, current, previous=None):
         if not current:
             return
 
         name = current.data(Qt.UserRole)
-        results = self.get_session_data(name)
+        processed = bool(current.data(Qt.UserRole + 1))
 
         self.detail_title.setText(name)
-
-        target = results.get("Target Phonemes", {})
-        sentence = target.get("target_input", {}).get("sentence", "")
-
         self.detail_status.setText(
-            f"Expected sentence: {sentence}"
-            if sentence else "Session results"
-        )
-
-        processed = any(
-            label in results
-            for label in (
-                "Transcription",
-                "Actual Phonemes",
-                "PCC / PVC",
-                "SODA",
-            )
+            "All analysis files found." if processed
+            else "Some results are missing or this session has not been processed."
         )
 
         self.process_selected_btn.setEnabled(not processed)
-        self.delete_btn.setEnabled(True)
 
-        import json
+        # Load the session's saved audio
+        audio_path = ROOT / "target_phonemes" / name / f"{name}.wav"
 
+        self.audio_player.stop()
+        self.audio_player.setSource(QUrl())
+
+        self.audio_slider.setRange(0, 0)
+        self.audio_time_label.setText("00:00 / 00:00")
+
+        if audio_path.exists():
+            self.audio_player.setSource(QUrl.fromLocalFile(str(audio_path.resolve())))
+            self.audio_play_btn.setEnabled(True)
+            self.audio_slider.setEnabled(True)
+        else:
+            self.audio_play_btn.setEnabled(False)
+            self.audio_slider.setEnabled(False)
+            self.audio_time_label.setText("Audio not found")
+
+        # Collect available JSON files
+        folders = (
+            "target_phonemes",
+            "transcription",
+            "phoneme_word",
+            "phonetic_inventory",
+            "pcc_pvc",
+            "tttr_syllable_shape",
+            "soda",
+        )
+
+        data = {}
+        missing = []
+
+        for folder in folders:
+            if folder == "target_phonemes":
+                path = ROOT / folder / name / f"{name}.json"
+            else:
+                path = ROOT / folder / f"{name}.json"
+
+            if path.exists():
+                try:
+                    data[folder] = json.loads(
+                        path.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError) as exc:
+                    data[folder] = {
+                        "_read_error": str(exc)
+                    }
+            else:
+                missing.append(folder)
+
+        self.result_text.setHtml(self.format_session_overview(name, data))
+        self.analysis_text.setHtml(self.format_analysis_details(data))
         self.json_text.setPlainText(
-            json.dumps(results, indent=2, ensure_ascii=False)
-            if results else "No JSON results found."
+            json.dumps(data, indent=2, ensure_ascii=False)
         )
 
-        self.result_text.setHtml(
-            self.format_results(name, results)
+        if missing:
+            self.detail_status.setText(
+                f"{'Processed' if processed else 'Incomplete'} · "
+                f"Missing results: {', '.join(missing)}"
+            )
+
+    def format_session_overview(self, name, data):
+        target = data.get("target_phonemes", {})
+        transcription = data.get("transcription", {})
+        actual = data.get("phoneme_word", {})
+        inventory = data.get("phonetic_inventory", {})
+        scores = data.get("pcc_pvc", {})
+        tttr = data.get("tttr_syllable_shape", {})
+        soda = data.get("soda", {})
+
+        target_input = target.get("target_input", {})
+        sentence = target_input.get("sentence", "")
+        transcript = transcription.get("transcript", "")
+        # Get expected phonemes grouped by target word.
+        target_words = target.get("words", [])
+
+        expected_phonemes = " | ".join(
+            f"{word.get('word', '')}: {' '.join(word.get('phonemes', []))}"
+            for word in target_words
+        ) or "Unavailable"
+        summary = inventory.get("summary", {})
+        ttr = tttr.get("TEMPLIN_TTR", {})
+
+        def row(label, value):
+            return (
+                f"<tr><td><b>{escape(str(label))}</b></td>"
+                f"<td>{escape(str(value))}</td></tr>"
+            )
+
+        html = [
+            "<html><body style='font-family:Segoe UI; color:#e8f0fb;'>",
+            f"<h2>{escape(name)}</h2>",
+            "<h3>Recording Details</h3>",
+            "<table width='100%' cellspacing='8'>",
+            row("Expected sentence", sentence or "Unavailable"),
+            row("Expected phonemes", expected_phonemes or "Unavailable"),
+            row("Recognized transcript", transcript or "Unavailable"),
+            row("Actual phoneme sequence",
+                actual.get("phoneme_sequence", "Unavailable")),
+            row("Grouped actual phonemes",
+                actual.get("phoneme_words", "Unavailable")),
+            "</table>",
+            "<h3>Speech Analysis at a Glance</h3>",
+            "<table width='100%' cellspacing='8'>",
+            row("PCC", f"{scores.get('PCC', {}).get('percentage', '—')}%"),
+            row("PVC", f"{scores.get('PVC', {}).get('percentage', '—')}%"),
+            row("Target phoneme tokens",
+                summary.get("target_phoneme_tokens", "—")),
+            row("Actual phoneme tokens",
+                summary.get("actual_phoneme_tokens", "—")),
+            row("Unique words (TTR types)", ttr.get("types", "—")),
+            row("Total words analyzed (TTR tokens)", ttr.get("tokens", "—")),
+            row("TTR", f"{ttr.get('TTR', '—')}%"),
+            row("SODA correct", soda.get("summary", {}).get("Correct", "—")),
+            row("SODA omissions", soda.get("summary", {}).get("Omission", "—")),
+            row("SODA substitutions",
+                soda.get("summary", {}).get("Substitution", "—")),
+            "</table>",
+            "<p style='color:#9bb0c8;'>"
+            "Automated phoneme recognition and scores may be inaccurate. "
+            "Review the audio and detailed results before clinical interpretation."
+            "</p>",
+            "</body></html>",
+        ]
+
+        return "".join(html)
+
+    def format_analysis_details(self, data):
+        parts = [
+            "<html><body style='font-family:Segoe UI; color:#e8f0fb;'>",
+            "<h2>Speech Analysis Details</h2>",
+        ]
+
+        def heading(title):
+            parts.append(
+                f"<h3 style='color:#38a4ff; margin-top:20px;'>"
+                f"{escape(title)}</h3>"
+            )
+
+        def table(headers, rows):
+            parts.append(
+                "<table width='100%' cellspacing='0' cellpadding='6' "
+                "style='border-collapse:collapse;'>"
+            )
+            parts.append("<tr>")
+            for header in headers:
+                parts.append(
+                    "<th align='left' style='background:#203b5b;'>"
+                    f"{escape(str(header))}</th>"
+                )
+            parts.append("</tr>")
+
+            for values in rows:
+                parts.append("<tr>")
+                for value in values:
+                    if value is None or value == "":
+                        value = "—"
+                    parts.append(
+                        "<td style='border-bottom:1px solid #29435f;'>"
+                        f"{escape(str(value))}</td>"
+                    )
+                parts.append("</tr>")
+            parts.append("</table>")
+
+        # 1. PCC and PVC
+        pcc_data = data.get("pcc_pvc", {})
+        heading("1. PCC — Percentage of Consonants Correct")
+        pcc = pcc_data.get("PCC", {})
+        table(
+            ["Correct", "Total", "Percentage"],
+            [[pcc.get("correct", "—"), pcc.get("total", "—"),
+            f"{pcc.get('percentage', '—')}%"]]
         )
+
+        heading("2. PVC — Percentage of Vowels Correct")
+        pvc = pcc_data.get("PVC", {})
+        table(
+            ["Correct", "Total", "Percentage"],
+            [[pvc.get("correct", "—"), pvc.get("total", "—"),
+            f"{pvc.get('percentage', '—')}%"]]
+        )
+
+        # 2. TTR and word frequency
+        tttr_data = data.get("tttr_syllable_shape", {})
+        ttr = tttr_data.get("TEMPLIN_TTR", {})
+
+        heading("3. TEMPLIN Type-Token Ratio (TTR)")
+        table(
+            ["Types (unique words)", "Tokens (word occurrences)", "TTR"],
+            [[ttr.get("types", "—"), ttr.get("tokens", "—"),
+            f"{ttr.get('TTR', '—')}%"]]
+        )
+
+        # Count repeated words from the Whisper transcript segments.
+        segments = data.get("transcription", {}).get("segments", [])
+        word_counts = Counter(
+            str(segment.get("word", "")).strip(".,!?;:\"'()[]{}").lower()
+            for segment in segments
+            if str(segment.get("word", "")).strip(".,!?;:\"'()[]{}")
+        )
+
+        heading("Word Frequency")
+        if word_counts:
+            table(
+                ["Word", "Times said"],
+                sorted(word_counts.items(), key=lambda item: (-item[1], item[0]))
+            )
+        else:
+            parts.append("<p>No word-level transcript is available.</p>")
+
+        # 3. Syllable shapes
+        syllable_data = tttr_data.get("actual_syllable_analysis", [])
+        heading("4. Syllable Shape Analysis")
+        syllable_rows = []
+
+        for item in syllable_data:
+            shapes = item.get("syllable_shapes", [])
+            phonemes = item.get("phonemes", [])
+            syllable_rows.append([
+                item.get("word", "—"),
+                item.get("phoneme_group", "—"),
+                " ".join(phonemes) or "—",
+                item.get("syllable_count", "—"),
+                ", ".join(shapes) or "—",
+            ])
+
+        table(
+            ["Word", "Actual group", "Phonemes", "Syllables", "Shape"],
+            syllable_rows
+        )
+
+        shape_summary = tttr_data.get("actual_syllable_shapes", {})
+        shape_counts = shape_summary.get("shape_counts", {})
+        shape_percentages = shape_summary.get("shape_percentages", {})
+
+        if shape_counts:
+            heading("Syllable Shape Totals")
+            table(
+                ["Shape", "Count", "Percentage"],
+                [
+                    [shape, count, f"{shape_percentages.get(shape, 0)}%"]
+                    for shape, count in shape_counts.items()
+                ]
+            )
+
+        # 4. SODA, target vs actual side by side
+        soda_data = data.get("soda", {})
+        heading("5. SODA Analysis — Target vs Actual")
+
+        soda_rows = []
+        for item in soda_data.get("word_results", []):
+            counts = item.get("counts", {})
+            soda_rows.append([
+                item.get("word", "—"),
+                " ".join(item.get("target_phonemes", [])) or "—",
+                " ".join(item.get("actual_phonemes", [])) or "—",
+                counts.get("Correct", 0),
+                counts.get("Substitution", 0),
+                counts.get("Omission", 0),
+                counts.get("Distortion", 0),
+                counts.get("Addition", 0),
+            ])
+
+        table(
+            ["Word", "Target phonemes", "Actual phonemes",
+            "Correct", "Sub.", "Omit.", "Dist.", "Add."],
+            soda_rows
+        )
+
+        soda_summary = soda_data.get("summary", {})
+        heading("SODA Totals")
+        table(
+            ["Correct", "Substitution", "Omission", "Distortion", "Addition"],
+            [[
+                soda_summary.get("Correct", "—"),
+                soda_summary.get("Substitution", "—"),
+                soda_summary.get("Omission", "—"),
+                soda_summary.get("Distortion", "—"),
+                soda_summary.get("Addition", "—"),
+            ]]
+        )
+
+        # 5. Phonetic inventory
+        inventory_data = data.get("phonetic_inventory", {})
+        inventory_summary = inventory_data.get("summary", {})
+
+        heading("6. Phonetic Inventory Summary")
+        table(
+            ["Measure", "Count / symbols"],
+            [
+                ["Target phoneme tokens",
+                inventory_summary.get("target_phoneme_tokens", "—")],
+                ["Actual phoneme tokens",
+                inventory_summary.get("actual_phoneme_tokens", "—")],
+                ["Target unique phonemes",
+                inventory_summary.get("target_unique_phonemes", "—")],
+                ["Actual unique phonemes",
+                inventory_summary.get("actual_unique_phonemes", "—")],
+                ["Shared phonemes",
+                ", ".join(inventory_summary.get("shared_phonemes", [])) or "—"],
+                ["Target not observed",
+                ", ".join(inventory_summary.get("target_not_observed", [])) or "—"],
+                ["Observed not in target",
+                ", ".join(inventory_summary.get("observed_not_in_target", [])) or "—"],
+            ]
+        )
+
+        # Full inventory table
+        inventory_rows = []
+        for item in inventory_data.get("inventory", []):
+            inventory_rows.append([
+                item.get("phoneme", "—"),
+                item.get("sound_type", "—"),
+                item.get("target_count", 0),
+                item.get("actual_count", 0),
+                item.get("status", "—"),
+            ])
+
+        if inventory_rows:
+            heading("Phoneme-by-Phoneme Inventory")
+            table(
+                ["Phoneme", "Type", "Target count", "Actual count", "Status"],
+                inventory_rows
+            )
+
+        parts.append(
+            "<p style='color:#9bb0c8; margin-top:20px;'>"
+            "These are automated comparisons of phoneme symbols. They do not "
+            "independently verify pronunciation or establish a clinical diagnosis. "
+            "Syllable shapes are estimates, and distortions require audio review "
+            "and phonetic judgment.</p>"
+        )
+
+        parts.append("</body></html>")
+        return "".join(parts)
 
     def format_results(self, name, results):
         def esc(value):
@@ -1148,31 +1716,48 @@ class MainWindow(QMainWindow):
     def process_selected(self):
         item = self.file_list.currentItem()
         if not item:
+            QMessageBox.warning(
+                self, "No Recording Selected",
+                "Please select a recording first."
+            )
             return
 
         name = item.data(Qt.UserRole)
         results = self.get_session_data(name)
 
-        if any(
-            label in results
-            for label in (
-                "Transcription",
-                "Actual Phonemes",
-                "PCC / PVC",
-                "SODA",
+        # Check whether the main analysis results already exist.
+        required_results = (
+            "PCC / PVC",
+            "SODA",
+            "TTTR / Syllable Shape",
+            "Phonetic Inventory",
+        )
+
+        if all(label in results for label in required_results):
+            QMessageBox.information(
+                self, "Already Processed",
+                f"{name} already has its analysis results."
             )
-        ):
             return
 
+        # Get the expected sentence from the target JSON.
         target = results.get("Target Phonemes", {})
         expected_words = (
-            target.get("target_input", {}).get("sentence")
+            target.get("target_input", {}).get("sentence", "")
         )
+
+        if not expected_words:
+            QMessageBox.warning(
+                self, "Target Sentence Missing",
+                "The expected sentence could not be found. "
+                "Check the target phoneme JSON before processing."
+            )
+            return
 
         answer = QMessageBox.question(
             self,
-            "Process this file?",
-            f"Process {name} using the analysis pipeline?",
+            "Process this recording?",
+            f"Run the analysis pipeline for {name}?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )

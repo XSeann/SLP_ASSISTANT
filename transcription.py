@@ -37,7 +37,8 @@ def transcription_main(path):
     segments, info = model.transcribe(
         path,
         word_timestamps=True,
-        beam_size=5
+        beam_size=5,
+        language="en"
     )
 
     print(f"Detected Language : {info.language}")
