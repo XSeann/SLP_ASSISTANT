@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 from phonemizer import phonemize
+from ipa_char import (CONSONANTS, VOWELS, DIPHTHONGS, IPA_SYMBOLS)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "target_phonemes"
@@ -29,22 +30,28 @@ def normalize_word(word):
 
 def parse_phonemes(text):
     # Keep IPA modifiers attached to their preceding phoneme.
-    modifiers = set("ːˑʰʱʲʷʸ̥̯̃̈̆̄́̀˞")
+    # modifiers = set("ːˑʰʱʲʷʸ̥̯̃̈̆̄́̀˞")
     phonemes = []
-    current = ""
+    combine_state = False
+    
+    txt_len = len(re.sub(r"\s+", "", text))
+    
+    for ind in range(txt_len): 
+        combine = text[ind] + text[ind+1] if ind+1 != txt_len else ""
 
-    for char in re.sub(r"\s+", "", text):
-        if char in "|/":
+        if combine_state:
+            combine_state = False
             continue
-        if char in modifiers or char in "ˈˌ":
-            current += char
-        else:
-            if current:
-                phonemes.append(current)
-            current = char
 
-    if current:
-        phonemes.append(current)
+        if text[ind] in "|/":
+            continue
+
+        if combine in IPA_SYMBOLS:
+            combine_state = True
+            phonemes.append(text[ind] + text[ind+1])  
+
+        if combine_state == False:
+            phonemes.append(text[ind])
 
     return phonemes
 
@@ -58,6 +65,7 @@ def phonemize_word(word):
             preserve_punctuation=False,
             njobs=1
         )
+
         return parse_phonemes(result) if result else []
     except Exception as error:
         print(f"WARNING: Could not phonemize '{word}': {error}")
@@ -86,6 +94,7 @@ def target_phonemizer_main(title, sentence):
     word_results = []
     for index, word in enumerate(words, start=1):
         phonemes = phonemize_word(word)
+        print("PHONEMES: ", phonemes)
         word_results.append({
             "index": index,
             "word": word,
@@ -143,4 +152,4 @@ def target_phonemizer_main(title, sentence):
     }
 
 if __name__ == "__main__":
-    target_phonemizer_main()
+    target_phonemizer_main("session #30", "Hello look what i brought to the park")
